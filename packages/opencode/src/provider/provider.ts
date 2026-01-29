@@ -36,6 +36,7 @@ import { createTogetherAI } from "@ai-sdk/togetherai"
 import { createPerplexity } from "@ai-sdk/perplexity"
 import { createVercel } from "@ai-sdk/vercel"
 import { createGitLab } from "@gitlab/gitlab-ai-provider"
+import { createSaturn } from "ai-sdk-provider-saturn"
 import { ProviderTransform } from "./transform"
 
 export namespace Provider {
@@ -76,6 +77,7 @@ export namespace Provider {
     "@gitlab/gitlab-ai-provider": createGitLab,
     // @ts-ignore (TODO: kill this code so we dont have to maintain it)
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
+    "ai-sdk-provider-saturn": createSaturn,
   }
 
   type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
@@ -83,6 +85,7 @@ export namespace Provider {
     autoload: boolean
     getModel?: CustomModelLoader
     options?: Record<string, any>
+    models?: Record<string, Partial<Model>>
   }>
 
   const CUSTOM_LOADERS: Record<string, CustomLoader> = {
@@ -506,6 +509,62 @@ export namespace Provider {
         },
       }
     },
+    saturn: async () => {
+      const saturnLog = Log.create({ service: "saturn" })
+
+      const saturnLogger = {
+        log(
+          level: "debug" | "info" | "warn" | "error",
+          message: string,
+          data?: Record<string, unknown>,
+        ) {
+          saturnLog[level](message, data)
+        },
+      }
+
+      const saturnProvider = createSaturn({
+        discoveryTimeout: 5000,
+        logger: saturnLogger,
+      })
+
+      const discovery = saturnProvider.getDiscovery()
+      await new Promise<void>((resolve) => {
+        const startTime = Date.now()
+        const timeout = 5000
+        const check = () => {
+          if (discovery.hasServices() || Date.now() - startTime > timeout) {
+            resolve()
+          } else {
+            setTimeout(check, 100)
+          }
+        }
+        check()
+      })
+
+      await discovery.fetchAllModels()
+
+      const models: Record<string, Partial<Model>> = {}
+      for (const service of discovery.getAllServices()) {
+        for (const modelId of service.models) {
+          if (!models[modelId]) {
+            models[modelId] = {
+              name: `${modelId} (via ${service.provider || service.name})`,
+            }
+          }
+        }
+      }
+
+      saturnLog.info("Saturn discovered models", { count: Object.keys(models).length })
+
+      return {
+        autoload: Object.keys(models).length > 0,
+        options: {
+          discoveryTimeout: 5000,
+          logger: saturnLogger,
+        },
+        models,
+      }
+    },
   }
 
   export const Model = z
@@ -669,6 +728,51 @@ export namespace Provider {
       env: provider.env ?? [],
       options: {},
       models: mapValues(provider.models, (model) => fromModelsDevModel(provider, model)),
+    }
+  }
+
+  function fromDynamicModel(providerID: string, modelId: string, partial: Partial<Model>): Model {
+    return {
+      id: modelId,
+      providerID,
+      name: partial.name ?? modelId,
+      api: { id: modelId, url: partial.api?.url ?? "", npm: "ai-sdk-provider-saturn" },
+      status: partial.status ?? "active",
+      capabilities: {
+        temperature: partial.capabilities?.temperature ?? true,
+        reasoning: partial.capabilities?.reasoning ?? false,
+        attachment: partial.capabilities?.attachment ?? false,
+        toolcall: partial.capabilities?.toolcall ?? true,
+        input: {
+          text: true,
+          audio: false,
+          image: partial.capabilities?.input?.image ?? false,
+          video: false,
+          pdf: false,
+        },
+        output: {
+          text: true,
+          audio: false,
+          image: false,
+          video: false,
+          pdf: false,
+        },
+        interleaved: false,
+      },
+      cost: {
+        input: partial.cost?.input ?? 0,
+        output: partial.cost?.output ?? 0,
+        cache: { read: 0, write: 0 },
+      },
+      limit: {
+        context: partial.limit?.context ?? 128000,
+        output: partial.limit?.output ?? 8192,
+      },
+      options: {},
+      headers: {},
+      family: partial.family ?? "",
+      release_date: partial.release_date ?? new Date().toISOString().split("T")[0],
+      variants: {},
     }
   }
 
@@ -890,6 +994,17 @@ export namespace Provider {
         if (result.getModel) modelLoaders[providerID] = result.getModel
         const opts = result.options ?? {}
         const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
+
+        if (result.models) {
+          const existingModels = data.models ?? {}
+          for (const [modelId, modelConfig] of Object.entries(result.models)) {
+            if (!existingModels[modelId]) {
+              existingModels[modelId] = fromDynamicModel(providerID, modelId, modelConfig)
+            }
+          }
+          data.models = existingModels
+        }
+
         mergeProvider(providerID, patch)
       }
     }

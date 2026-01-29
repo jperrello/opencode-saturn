@@ -8,6 +8,68 @@
     "opencode": {
       "options": {},
     },
+    "saturn": {
+      "name": "Saturn (Network)",
+      "npm": "ai-sdk-provider-saturn",
+      "env": [],
+      "options": {
+        "discoveryTimeout": 5000,
+        "logLevel": "info"
+      },
+      "models": {
+        "openai/gpt-4o-mini": {
+          "name": "GPT-4o Mini (via Saturn)",
+          "tool_call": true,
+          "temperature": true,
+          "attachment": false,
+          "reasoning": false,
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "cost": {
+            "input": 0.15,
+            "output": 0.6
+          },
+          "release_date": "2024-07-18",
+          "options": {}
+        },
+        "anthropic/claude-3.5-sonnet": {
+          "name": "Claude 3.5 Sonnet (via Saturn)",
+          "tool_call": true,
+          "temperature": true,
+          "attachment": true,
+          "reasoning": false,
+          "limit": {
+            "context": 200000,
+            "output": 8192
+          },
+          "cost": {
+            "input": 3,
+            "output": 15
+          },
+          "release_date": "2024-06-20",
+          "options": {}
+        },
+        "google/gemini-2.0-flash-001": {
+          "name": "Gemini 2.0 Flash (via Saturn)",
+          "tool_call": true,
+          "temperature": true,
+          "attachment": true,
+          "reasoning": false,
+          "limit": {
+            "context": 1000000,
+            "output": 8192
+          },
+          "cost": {
+            "input": 0.1,
+            "output": 0.4
+          },
+          "release_date": "2024-12-11",
+          "options": {}
+        }
+      }
+    }
   },
   "mcp": {
     "context7": {
