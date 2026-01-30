@@ -510,29 +510,29 @@ export namespace Provider {
       }
     },
     saturn: async () => {
-      const saturnLog = Log.create({ service: "saturn" })
+      const trace = Log.create({ service: "saturn" })
 
-      const saturnLogger = {
+      const logger = {
         log(
           level: "debug" | "info" | "warn" | "error",
           message: string,
           data?: Record<string, unknown>,
         ) {
-          saturnLog[level](message, data)
+          trace[level](message, data)
         },
       }
 
-      const saturnProvider = createSaturn({
+      const sdk = createSaturn({
         discoveryTimeout: 5000,
-        logger: saturnLogger,
+        logger,
       })
 
-      const discovery = saturnProvider.getDiscovery()
+      const discovery = sdk.getDiscovery()
       await new Promise<void>((resolve) => {
-        const startTime = Date.now()
+        const start = Date.now()
         const timeout = 5000
         const check = () => {
-          if (discovery.hasServices() || Date.now() - startTime > timeout) {
+          if (discovery.hasServices() || Date.now() - start > timeout) {
             resolve()
           } else {
             setTimeout(check, 100)
@@ -545,22 +545,22 @@ export namespace Provider {
 
       const models: Record<string, Partial<Model>> = {}
       for (const service of discovery.getAllServices()) {
-        for (const modelId of service.models) {
-          if (!models[modelId]) {
-            models[modelId] = {
-              name: `${modelId} (via ${service.provider || service.name})`,
+        for (const id of service.models) {
+          if (!models[id]) {
+            models[id] = {
+              name: `${id} (via ${service.provider || service.name})`,
             }
           }
         }
       }
 
-      saturnLog.info("Saturn discovered models", { count: Object.keys(models).length })
+      trace.info("Saturn discovered models", { count: Object.keys(models).length })
 
       return {
         autoload: Object.keys(models).length > 0,
         options: {
           discoveryTimeout: 5000,
-          logger: saturnLogger,
+          logger,
         },
         models,
       }
@@ -996,13 +996,13 @@ export namespace Provider {
         const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
 
         if (result.models) {
-          const existingModels = data.models ?? {}
-          for (const [modelId, modelConfig] of Object.entries(result.models)) {
-            if (!existingModels[modelId]) {
-              existingModels[modelId] = fromDynamicModel(providerID, modelId, modelConfig)
+          const existing = data.models ?? {}
+          for (const [id, config] of Object.entries(result.models)) {
+            if (!existing[id]) {
+              existing[id] = fromDynamicModel(providerID, id, config)
             }
           }
-          data.models = existingModels
+          data.models = existing
         }
 
         mergeProvider(providerID, patch)
