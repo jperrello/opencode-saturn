@@ -13,6 +13,7 @@ import { Env } from "../env"
 import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
 import { iife } from "@/util/iife"
+import { GlobalBus } from "../bus/global"
 
 // Direct imports for bundled providers
 import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock"
@@ -36,7 +37,7 @@ import { createTogetherAI } from "@ai-sdk/togetherai"
 import { createPerplexity } from "@ai-sdk/perplexity"
 import { createVercel } from "@ai-sdk/vercel"
 import { createGitLab } from "@gitlab/gitlab-ai-provider"
-import { createSaturn } from "ai-sdk-provider-saturn"
+import { createSaturn, getEffectiveEndpoint, type DiscoveredService, type SaturnProvider } from "ai-sdk-provider-saturn"
 import { ProviderTransform } from "./transform"
 
 export namespace Provider {
@@ -86,7 +87,13 @@ export namespace Provider {
     getModel?: CustomModelLoader
     options?: Record<string, any>
     models?: Record<string, Partial<Model>>
+    dynamicProviders?: Record<string, Info>
   }>
+
+  let saturnDiscoverySdk: ReturnType<typeof createSaturn> | null = null
+  
+  const globalSaturnProviders = new Map<string, { info: Info; loader: CustomModelLoader }>()
+
 
   const CUSTOM_LOADERS: Record<string, CustomLoader> = {
     async anthropic() {
@@ -511,6 +518,10 @@ export namespace Provider {
     },
     saturn: async () => {
       const trace = Log.create({ service: "saturn" })
+      const instanceDirectory = Instance.directory
+      const dynamicProviders: Record<string, Info> = {}
+      let total = 0
+      let initialDiscoveryComplete = false
 
       const logger = {
         log(
@@ -522,17 +533,144 @@ export namespace Provider {
         },
       }
 
-      const sdk = createSaturn({
-        discoveryTimeout: 5000,
-        logger,
-      })
+      const createProviderInfo = (service: DiscoveredService): Info | null => {
+        if (service.models.length === 0) return null
 
-      const discovery = sdk.getDiscovery()
+        const id = `saturn:${service.name}`
+        const displayName = service.name
+          .replace(/-/g, " ")
+          .replace(/\b\w/g, (c) => c.toUpperCase())
+        const models: Record<string, Model> = {}
+
+        for (const modelId of service.models) {
+          models[modelId] = fromDynamicModel(id, modelId, { name: modelId }, "ai-sdk-provider-saturn")
+        }
+
+        const endpoint = getEffectiveEndpoint(service)
+
+        return {
+          id,
+          name: `Saturn • ${displayName}`,
+          source: "custom",
+          env: [],
+          options: {
+            serviceEndpoint: endpoint,
+            serviceName: service.name,
+          },
+          models,
+        }
+      }
+
+      const addServiceProvider = (service: DiscoveredService) => {
+        const info = createProviderInfo(service)
+        if (!info) return
+        
+        total += service.models.length
+        dynamicProviders[info.id] = info
+
+        trace.info("Saturn service added", {
+          id: info.id,
+          models: service.models.length,
+          deployment: service.deployment,
+          apiBase: service.apiBase,
+          endpoint: info.options.serviceEndpoint,
+        })
+      }
+
+      if (!saturnDiscoverySdk) {
+        saturnDiscoverySdk = createSaturn({
+          discoveryTimeout: 3000,
+          logger,
+          onServiceDiscovered: async (service: DiscoveredService) => {
+            if (!initialDiscoveryComplete) return
+            await Instance.provide({
+              directory: instanceDirectory,
+              fn: async () => {
+                try {
+                  trace.info("Saturn service discovered (background)", {
+                    name: service.name,
+                    models: service.models.length,
+                    deployment: service.deployment,
+                    endpoint: getEffectiveEndpoint(service),
+                    host: service.host,
+                  })
+                  const discovery = saturnDiscoverySdk!.getDiscovery()
+
+                  const fetchWithRetry = async (retries = 3, delay = 500) => {
+                    for (let attempt = 1; attempt <= retries; attempt++) {
+                      const current = discovery.getAllServices().find((s) => s.name === service.name)
+                      if (current && current.models.length > 0) {
+                        return current
+                      }
+                      trace.info("Fetching models for Saturn service", {
+                        name: service.name,
+                        attempt,
+                        endpoint: current ? getEffectiveEndpoint(current) : getEffectiveEndpoint(service),
+                      })
+                      await discovery.fetchAllModels()
+                      const updated = discovery.getAllServices().find((s) => s.name === service.name)
+                      if (updated && updated.models.length > 0) {
+                        return updated
+                      }
+                      if (attempt < retries) {
+                        trace.info("Retrying models fetch after delay", { name: service.name, delay })
+                        await new Promise(r => setTimeout(r, delay))
+                      }
+                    }
+                    return null
+                  }
+
+                  const updated = await fetchWithRetry()
+                  if (!updated || updated.models.length === 0) {
+                    trace.warn("Saturn service has no models after fetch retries", {
+                      name: service.name,
+                    })
+                    return
+                  }
+                  const info = createProviderInfo(updated)
+                  if (info) {
+                    trace.info("Registering dynamic Saturn provider", {
+                      id: info.id,
+                      models: Object.keys(info.models).length,
+                    })
+                    await registerDynamic(info.id, info)
+                  }
+                } catch (e) {
+                  trace.error("Saturn service discovery callback failed", {
+                    name: service.name,
+                    error: e instanceof Error ? e.message : String(e),
+                  })
+                }
+              },
+            })
+          },
+          onServiceRemoved: async (name: string) => {
+            if (!initialDiscoveryComplete) return
+            await Instance.provide({
+              directory: instanceDirectory,
+              fn: async () => {
+                const id = `saturn:${name}`
+                const discovery = saturnDiscoverySdk?.getDiscovery()
+                const stillExists = discovery?.getAllServices().find(s => s.name === name)
+                if (stillExists) {
+                  trace.info("Saturn service removal skipped - service was re-discovered", { name })
+                  return
+                }
+                trace.info("Saturn service removed", { name })
+                await unregisterDynamic(id)
+              },
+            })
+          },
+        })
+      }
+
+      const discovery = saturnDiscoverySdk.getDiscovery()
+
       await new Promise<void>((resolve) => {
         const start = Date.now()
-        const timeout = 5000
+        const timeout = 3000
         const check = () => {
-          if (discovery.hasServices() || Date.now() - start > timeout) {
+          if (Date.now() - start > timeout) {
             resolve()
           } else {
             setTimeout(check, 100)
@@ -541,28 +679,35 @@ export namespace Provider {
         check()
       })
 
-      await discovery.fetchAllModels()
-
-      const models: Record<string, Partial<Model>> = {}
-      for (const service of discovery.getAllServices()) {
-        for (const id of service.models) {
-          if (!models[id]) {
-            models[id] = {
-              name: `${id} (via ${service.provider || service.name})`,
-            }
-          }
+      if (discovery.hasServices()) {
+        await discovery.fetchAllModels()
+        const services = sortBy(discovery.getAllServices(), (s) => s.priority)
+        for (const service of services) {
+          addServiceProvider(service)
         }
       }
 
-      trace.info("Saturn discovered models", { count: Object.keys(models).length })
+      initialDiscoveryComplete = true
+      trace.info("Saturn discovery complete", {
+        services: Object.keys(dynamicProviders).length,
+        models: total,
+      })
+
+      const saturnGetModel: CustomModelLoader = async (_sdk, modelID, _options) => {
+        if (!saturnDiscoverySdk) {
+          throw new Error("Saturn discovery not initialized")
+        }
+        return saturnDiscoverySdk.languageModel(modelID)
+      }
 
       return {
-        autoload: Object.keys(models).length > 0,
+        autoload: total > 0,
+        getModel: saturnGetModel,
         options: {
-          discoveryTimeout: 5000,
+          discoveryTimeout: 3000,
           logger,
         },
-        models,
+        dynamicProviders,
       }
     },
   }
@@ -731,12 +876,12 @@ export namespace Provider {
     }
   }
 
-  function fromDynamicModel(providerID: string, modelId: string, partial: Partial<Model>): Model {
+  function fromDynamicModel(providerID: string, modelId: string, partial: Partial<Model>, npm?: string): Model {
     return {
       id: modelId,
       providerID,
       name: partial.name ?? modelId,
-      api: { id: modelId, url: partial.api?.url ?? "", npm: "ai-sdk-provider-saturn" },
+      api: { id: modelId, url: partial.api?.url ?? "", npm: npm ?? "ai-sdk-provider-saturn" },
       status: partial.status ?? "active",
       capabilities: {
         temperature: partial.capabilities?.temperature ?? true,
@@ -982,6 +1127,17 @@ export namespace Provider {
       }
     }
 
+    if (!database["saturn"]) {
+      database["saturn"] = {
+        id: "saturn",
+        name: "Saturn",
+        env: [],
+        source: "custom",
+        options: {},
+        models: {},
+      }
+    }
+
     for (const [providerID, fn] of Object.entries(CUSTOM_LOADERS)) {
       if (disabled.has(providerID)) continue
       const data = database[providerID]
@@ -1003,6 +1159,38 @@ export namespace Provider {
             }
           }
           data.models = existing
+        }
+
+        if (result.dynamicProviders) {
+          for (const [dynamicID, info] of Object.entries(result.dynamicProviders)) {
+            database[dynamicID] = info
+
+            mergeProvider(dynamicID, {
+              source: "custom",
+              options: { ...opts, ...info.options },
+            })
+
+            if (dynamicID.startsWith("saturn:") && info.options?.serviceEndpoint) {
+              const serviceOpts = info.options as {
+                serviceEndpoint: string
+                serviceName: string
+              }
+              modelLoaders[dynamicID] = async (_sdk, modelID, _options) => {
+                const freshKey = saturnDiscoverySdk
+                  ?.getDiscovery()
+                  .getAllServices()
+                  .find((s) => s.name === serviceOpts.serviceName)?.ephemeralKey
+                const directSaturn = createSaturn({
+                  serviceEndpoint: serviceOpts.serviceEndpoint,
+                  serviceName: serviceOpts.serviceName,
+                  serviceEphemeralKey: freshKey || undefined,
+                })
+                return directSaturn.languageModel(modelID)
+              }
+            } else if (result.getModel) {
+              modelLoaders[dynamicID] = result.getModel
+            }
+          }
         }
 
         mergeProvider(providerID, patch)
@@ -1065,10 +1253,101 @@ export namespace Provider {
       sdk,
       modelLoaders,
     }
+  }, async () => {
+    if (saturnDiscoverySdk) {
+      log.info("disposing Saturn SDK")
+      saturnDiscoverySdk.destroy()
+      saturnDiscoverySdk = null
+    }
   })
 
   export async function list() {
-    return state().then((state) => state.providers)
+    const dir = Instance.directory
+    const s = await state()
+    
+    for (const [providerID, entry] of globalSaturnProviders) {
+      if (!s.providers[providerID]) {
+        s.providers[providerID] = entry.info
+        s.modelLoaders[providerID] = entry.loader
+      }
+    }
+    
+    log.info("Provider.list called", { 
+      directory: dir, 
+      saturnProviders: Object.keys(s.providers).filter(k => k.startsWith("saturn:")),
+      globalSaturnCount: globalSaturnProviders.size,
+    })
+    return s.providers
+  }
+
+  export async function registerDynamic(providerID: string, provider: Info): Promise<void> {
+    const dir = Instance.directory
+    log.info("registerDynamic called", { providerID, directory: dir })
+    const modelCount = Object.keys(provider.models).length
+    if (modelCount === 0) {
+      log.warn("registerDynamic called with empty models, skipping", { providerID })
+      return
+    }
+    
+    const s = await state()
+    s.providers[providerID] = provider
+
+    if (providerID.startsWith("saturn:") && provider.options?.serviceEndpoint) {
+      const serviceOpts = provider.options as {
+        serviceEndpoint: string
+        serviceName: string
+      }
+      const loader: CustomModelLoader = async (_sdk, modelID, _options) => {
+        const freshKey = saturnDiscoverySdk
+          ?.getDiscovery()
+          .getAllServices()
+          .find((svc) => svc.name === serviceOpts.serviceName)?.ephemeralKey
+        const directSaturn = createSaturn({
+          serviceEndpoint: serviceOpts.serviceEndpoint,
+          serviceName: serviceOpts.serviceName,
+          serviceEphemeralKey: freshKey || undefined,
+        })
+        return directSaturn.languageModel(modelID)
+      }
+      s.modelLoaders[providerID] = loader
+      globalSaturnProviders.set(providerID, { info: provider, loader })
+      log.info("Saturn provider added to global cache", { providerID, models: modelCount })
+    }
+
+    log.info("dynamic provider registered", { providerID, models: modelCount })
+    GlobalBus.emit("event", {
+      directory: "global",
+      payload: {
+        type: "server.provider.changed",
+        properties: { action: "added", providerID },
+      },
+    })
+  }
+
+  export async function unregisterDynamic(providerID: string): Promise<void> {
+    const s = await state()
+    if (s.providers[providerID] || globalSaturnProviders.has(providerID)) {
+      if (providerID.startsWith("saturn:")) {
+        const name = providerID.replace("saturn:", "")
+        const stillExists = saturnDiscoverySdk?.getDiscovery().getAllServices().find(svc => svc.name === name)
+        if (stillExists) {
+          log.info("unregisterDynamic skipped - saturn service was re-discovered", { providerID })
+          return
+        }
+        globalSaturnProviders.delete(providerID)
+        log.info("Saturn provider removed from global cache", { providerID })
+      }
+      delete s.providers[providerID]
+      delete s.modelLoaders[providerID]
+      log.info("dynamic provider unregistered", { providerID })
+      GlobalBus.emit("event", {
+        directory: "global",
+        payload: {
+          type: "server.provider.changed",
+          properties: { action: "removed", providerID },
+        },
+      })
+    }
   }
 
   async function getSDK(model: Model) {
@@ -1175,14 +1454,31 @@ export namespace Provider {
   }
 
   export async function getProvider(providerID: string) {
-    return state().then((s) => s.providers[providerID])
+    const s = await state()
+    if (s.providers[providerID]) return s.providers[providerID]
+    
+    const global = globalSaturnProviders.get(providerID)
+    if (global) {
+      s.providers[providerID] = global.info
+      s.modelLoaders[providerID] = global.loader
+      return global.info
+    }
+    return undefined
   }
 
   export async function getModel(providerID: string, modelID: string) {
     const s = await state()
-    const provider = s.providers[providerID]
+    let provider = s.providers[providerID]
+    
+    if (!provider && globalSaturnProviders.has(providerID)) {
+      const global = globalSaturnProviders.get(providerID)!
+      s.providers[providerID] = global.info
+      s.modelLoaders[providerID] = global.loader
+      provider = global.info
+    }
+    
     if (!provider) {
-      const availableProviders = Object.keys(s.providers)
+      const availableProviders = [...Object.keys(s.providers), ...globalSaturnProviders.keys()]
       const matches = fuzzysort.go(providerID, availableProviders, { limit: 3, threshold: -10000 })
       const suggestions = matches.map((m) => m.target)
       throw new ModelNotFoundError({ providerID, modelID, suggestions })

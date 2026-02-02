@@ -883,6 +883,14 @@ export type EventWorktreeFailed = {
   }
 }
 
+export type EventServerProviderChanged = {
+  type: "server.provider.changed"
+  properties: {
+    action: "added" | "removed"
+    providerID: string
+  }
+}
+
 export type Event =
   | EventInstallationUpdated
   | EventInstallationUpdateAvailable
@@ -926,6 +934,7 @@ export type Event =
   | EventPtyDeleted
   | EventWorktreeReady
   | EventWorktreeFailed
+  | EventServerProviderChanged
 
 export type GlobalEvent = {
   directory: string

@@ -662,6 +662,18 @@ function createGlobalSync() {
           )
           break
         }
+        case "server.provider.changed": {
+          globalSDK.client.provider.list().then((x) => {
+            setGlobalStore("provider", normalizeProviderList(x.data!))
+          })
+          for (const [dir, child] of Object.entries(children)) {
+            const [, setStore] = child
+            sdkFor(dir)
+              .provider.list()
+              .then((x) => setStore("provider", normalizeProviderList(x.data!)))
+          }
+          return
+        }
       }
       return
     }
@@ -944,6 +956,12 @@ function createGlobalSync() {
         sdkFor(directory)
           .lsp.status()
           .then((x) => setStore("lsp", x.data ?? []))
+        break
+      }
+      case "server.provider.changed": {
+        sdkFor(directory)
+          .provider.list()
+          .then((x) => setStore("provider", normalizeProviderList(x.data!)))
         break
       }
     }

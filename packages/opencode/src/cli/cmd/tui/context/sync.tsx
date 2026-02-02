@@ -318,6 +318,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
 
+        case "server.provider.changed": {
+          sdk.client.provider.list().then((x) => setStore("provider_next", reconcile(x.data!)))
+          sdk.client.config.providers().then((x) => {
+            setStore("provider", reconcile(x.data!.providers))
+            setStore("provider_default", reconcile(x.data!.default))
+          })
+          break
+        }
+
         case "vcs.branch.updated": {
           setStore("vcs", { branch: event.properties.branch })
           break
