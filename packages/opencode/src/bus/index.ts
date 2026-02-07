@@ -15,6 +15,14 @@ export namespace Bus {
     }),
   )
 
+  export const ProviderChanged = BusEvent.define(
+    "server.provider.changed",
+    z.object({
+      action: z.enum(["added", "removed"]),
+      providerID: z.string(),
+    }),
+  )
+
   const state = Instance.state(
     () => {
       const subscriptions = new Map<any, Subscription[]>()

@@ -1651,33 +1651,51 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     }
     template = template.trim()
 
-    const taskModel = await (async () => {
-      if (command.model) {
-        return Provider.parseModel(command.model)
-      }
-      if (command.agent) {
-        const cmdAgent = await Agent.get(command.agent)
-        if (cmdAgent?.model) {
-          return cmdAgent.model
+    const resolved = {
+      model: await (async () => {
+        if (command.model) {
+          return Provider.parseModel(command.model)
         }
-      }
-      if (input.model) return Provider.parseModel(input.model)
-      return await lastModel(input.sessionID)
-    })()
+        if (command.agent) {
+          const cmdAgent = await Agent.get(command.agent)
+          if (cmdAgent?.model) {
+            return cmdAgent.model
+          }
+        }
+        if (input.model) return Provider.parseModel(input.model)
+        return await lastModel(input.sessionID)
+      })(),
+    }
 
     try {
-      await Provider.getModel(taskModel.providerID, taskModel.modelID)
+      await Provider.getModel(resolved.model.providerID, resolved.model.modelID)
     } catch (e) {
-      if (Provider.ModelNotFoundError.isInstance(e)) {
+      if (!Provider.ModelNotFoundError.isInstance(e)) throw e
+      const alt = await Provider.failover(resolved.model)
+      if (alt) {
+        const target = await Provider.getModel(alt.providerID, alt.modelID).catch(() => undefined)
+        if (target) {
+          resolved.model = { providerID: alt.providerID, modelID: alt.modelID }
+        } else {
+          const { providerID, modelID, suggestions } = e.data
+          const hint = suggestions?.length ? ` Did you mean: ${suggestions.join(", ")}?` : ""
+          Bus.publish(Session.Event.Error, {
+            sessionID: input.sessionID,
+            error: new NamedError.Unknown({ message: `Model not found: ${providerID}/${modelID}.${hint}` }).toObject(),
+          })
+          throw e
+        }
+      } else {
         const { providerID, modelID, suggestions } = e.data
         const hint = suggestions?.length ? ` Did you mean: ${suggestions.join(", ")}?` : ""
         Bus.publish(Session.Event.Error, {
           sessionID: input.sessionID,
           error: new NamedError.Unknown({ message: `Model not found: ${providerID}/${modelID}.${hint}` }).toObject(),
         })
+        throw e
       }
-      throw e
     }
+    const taskModel = resolved.model
     const agent = await Agent.get(agentName)
     if (!agent) {
       const available = await Agent.list().then((agents) => agents.filter((a) => !a.hidden).map((a) => a.name))

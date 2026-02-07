@@ -14,6 +14,7 @@ import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
 import { iife } from "@/util/iife"
 import { GlobalBus } from "../bus/global"
+import { Bus } from "../bus"
 
 // Direct imports for bundled providers
 import { createAmazonBedrock, type AmazonBedrockProviderSettings } from "@ai-sdk/amazon-bedrock"
@@ -1323,6 +1324,7 @@ export namespace Provider {
         properties: { action: "added", providerID },
       },
     })
+    Bus.publish(Bus.ProviderChanged, { action: "added", providerID })
   }
 
   export async function unregisterDynamic(providerID: string): Promise<void> {
@@ -1348,6 +1350,7 @@ export namespace Provider {
           properties: { action: "removed", providerID },
         },
       })
+      Bus.publish(Bus.ProviderChanged, { action: "removed", providerID })
     }
   }
 
@@ -1603,6 +1606,21 @@ export namespace Provider {
       providerID: provider.id,
       modelID: model.id,
     }
+  }
+
+  export async function failover(input: {
+    providerID: string
+    modelID: string
+  }): Promise<{ providerID: string; modelID: string } | undefined> {
+    const providers = await list()
+    for (const [id, provider] of Object.entries(providers)) {
+      if (id === input.providerID) continue
+      if (!id.startsWith("saturn:")) continue
+      if (provider.models[input.modelID]) return { providerID: id, modelID: input.modelID }
+    }
+    const def = await defaultModel().catch(() => undefined)
+    if (def && (def.providerID !== input.providerID || def.modelID !== input.modelID)) return def
+    return undefined
   }
 
   export function parseModel(model: string) {
