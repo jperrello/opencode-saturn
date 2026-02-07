@@ -1224,7 +1224,7 @@ export namespace Config {
         for (let i = 0; i < data.plugin.length; i++) {
           const plugin = data.plugin[i]
           try {
-            data.plugin[i] = import.meta.resolve!(plugin, configFilepath)
+            data.plugin[i] = import.meta.resolve!(plugin)
           } catch (err) {}
         }
       }

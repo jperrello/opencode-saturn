@@ -64,7 +64,7 @@ export namespace LLM {
       Provider.getProvider(input.model.providerID),
       Auth.get(input.model.providerID),
     ])
-    const isCodex = provider.id === "openai" && auth?.type === "oauth"
+    const isCodex = provider?.id === "openai" && auth?.type === "oauth"
 
     const system = []
     system.push(
@@ -105,7 +105,7 @@ export namespace LLM {
       : ProviderTransform.options({
           model: input.model,
           sessionID: input.sessionID,
-          providerOptions: provider.options,
+          providerOptions: provider?.options,
         })
     const options: Record<string, any> = pipe(
       base,
@@ -168,7 +168,7 @@ export namespace LLM {
     // 1. Providers with "litellm" in their ID or API ID (auto-detected)
     // 2. Providers with explicit "litellmProxy: true" option (opt-in for custom gateways)
     const isLiteLLMProxy =
-      provider.options?.["litellmProxy"] === true ||
+      provider?.options?.["litellmProxy"] === true ||
       input.model.providerID.toLowerCase().includes("litellm") ||
       input.model.api.id.toLowerCase().includes("litellm")
 

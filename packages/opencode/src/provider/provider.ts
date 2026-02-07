@@ -78,6 +78,7 @@ export namespace Provider {
     "@gitlab/gitlab-ai-provider": createGitLab,
     // @ts-ignore (TODO: kill this code so we dont have to maintain it)
     "@ai-sdk/github-copilot": createGitHubCopilotOpenAICompatible,
+    // @ts-ignore (Saturn provider uses LanguageModelV3)
     "ai-sdk-provider-saturn": createSaturn,
   }
 
