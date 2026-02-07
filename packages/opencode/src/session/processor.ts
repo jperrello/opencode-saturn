@@ -239,12 +239,17 @@ export namespace SessionProcessor {
                     usage: value.usage,
                     metadata: value.providerMetadata,
                   })
-                  input.assistantMessage.finish = value.finishReason
+                  // Convert V3 finishReason (object) to string for V2 compatibility
+                  const finishReasonString =
+                    typeof value.finishReason === "string"
+                      ? value.finishReason
+                      : (value.finishReason as any)?.unified || "unknown"
+                  input.assistantMessage.finish = finishReasonString
                   input.assistantMessage.cost += usage.cost
                   input.assistantMessage.tokens = usage.tokens
                   await Session.updatePart({
                     id: Identifier.ascending("part"),
-                    reason: value.finishReason,
+                    reason: finishReasonString,
                     snapshot: await Snapshot.track(),
                     messageID: input.assistantMessage.id,
                     sessionID: input.assistantMessage.sessionID,
