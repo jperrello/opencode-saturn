@@ -44,6 +44,28 @@ import { ProviderTransform } from "./transform"
 export namespace Provider {
   const log = Log.create({ service: "provider" })
 
+  function patchSaturnFetch<T extends (...args: any[]) => Promise<any>>(fn: T): T {
+    return (async (...args: any[]) => {
+      const original = globalThis.fetch
+      globalThis.fetch = ((input: any, init?: any) =>
+        // @ts-ignore Bun-specific timeout option - see https://github.com/oven-sh/bun/issues/16682
+        original(input, { ...init, timeout: false })) as typeof fetch
+      try {
+        return await fn(...args)
+      } finally {
+        globalThis.fetch = original
+      }
+    }) as unknown as T
+  }
+
+  function wrapSaturnModel(model: any) {
+    const doStream = model.doStream.bind(model)
+    const doGenerate = model.doGenerate.bind(model)
+    model.doStream = patchSaturnFetch(doStream)
+    model.doGenerate = patchSaturnFetch(doGenerate)
+    return model
+  }
+
   function isGpt5OrLater(modelID: string): boolean {
     const match = /^gpt-(\d+)/.exec(modelID)
     if (!match) {
@@ -889,7 +911,7 @@ export namespace Provider {
         temperature: partial.capabilities?.temperature ?? true,
         reasoning: partial.capabilities?.reasoning ?? false,
         attachment: partial.capabilities?.attachment ?? false,
-        toolcall: partial.capabilities?.toolcall ?? true,
+        toolcall: partial.capabilities?.toolcall ?? false,
         input: {
           text: true,
           audio: false,
@@ -1187,7 +1209,7 @@ export namespace Provider {
                   serviceName: serviceOpts.serviceName,
                   serviceEphemeralKey: freshKey || undefined,
                 })
-                return directSaturn.languageModel(modelID)
+                return wrapSaturnModel(directSaturn.languageModel(modelID))
               }
             } else if (result.getModel) {
               modelLoaders[dynamicID] = result.getModel
@@ -1309,7 +1331,7 @@ export namespace Provider {
           serviceName: serviceOpts.serviceName,
           serviceEphemeralKey: freshKey || undefined,
         })
-        return directSaturn.languageModel(modelID)
+        return wrapSaturnModel(directSaturn.languageModel(modelID))
       }
       s.modelLoaders[providerID] = loader
       globalSaturnProviders.set(providerID, { info: provider, loader })

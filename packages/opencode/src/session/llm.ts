@@ -159,7 +159,7 @@ export namespace LLM {
           OUTPUT_TOKEN_MAX,
         )
 
-    const tools = await resolveTools(input)
+    const tools = input.model.capabilities.toolcall ? await resolveTools(input) : {}
 
     // LiteLLM and some Anthropic proxies require the tools parameter to be present
     // when message history contains tool calls, even if no tools are being used.
@@ -261,7 +261,9 @@ export namespace LLM {
               return args.params
             },
           },
-          extractReasoningMiddleware({ tagName: "think", startWithReasoning: false }),
+          ...(input.model.capabilities.reasoning
+            ? [extractReasoningMiddleware({ tagName: "think", startWithReasoning: false })]
+            : []),
         ],
       }),
       experimental_telemetry: {

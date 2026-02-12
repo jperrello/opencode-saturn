@@ -663,6 +663,7 @@ function createGlobalSync() {
           break
         }
         case "server.provider.changed": {
+          const props = event.properties as { action: string; providerID: string; models?: string[] }
           globalSDK.client.provider.list().then((x) => {
             setGlobalStore("provider", normalizeProviderList(x.data!))
           })
@@ -671,6 +672,17 @@ function createGlobalSync() {
             sdkFor(dir)
               .provider.list()
               .then((x) => setStore("provider", normalizeProviderList(x.data!)))
+          }
+          if (props.action === "removed" && props.providerID.startsWith("saturn:")) {
+            showToast({
+              title: `Saturn service offline: ${props.providerID.replace("saturn:", "")}`,
+              description: "Requests will automatically fail over to the next available service.",
+            })
+          }
+          if (props.action === "added" && props.providerID.startsWith("saturn:")) {
+            showToast({
+              title: `Saturn service online: ${props.providerID.replace("saturn:", "")}`,
+            })
           }
           return
         }

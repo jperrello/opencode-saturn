@@ -9,7 +9,7 @@ import { Bus } from "@/bus"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
 import { Plugin } from "@/plugin"
-import type { Provider } from "@/provider/provider"
+import { Provider } from "@/provider/provider"
 import { LLM } from "./llm"
 import { Config } from "@/config/config"
 import { SessionCompaction } from "./compaction"
@@ -34,6 +34,7 @@ export namespace SessionProcessor {
     let blocked = false
     let attempt = 0
     let needsCompaction = false
+    let failedOver = false
 
     const result = {
       get message() {
@@ -42,15 +43,18 @@ export namespace SessionProcessor {
       partFromToolCall(toolCallID: string) {
         return toolcalls[toolCallID]
       },
-      async process(streamInput: LLM.StreamInput) {
+      async process(initial: LLM.StreamInput) {
         log.info("process")
         needsCompaction = false
         const shouldBreak = (await Config.get()).experimental?.continue_loop_on_deny !== true
+        const active = { stream: initial }
         while (true) {
           try {
             let currentText: MessageV2.TextPart | undefined
             let reasoningMap: Record<string, MessageV2.ReasoningPart> = {}
-            const stream = await LLM.stream(streamInput)
+            log.info("streaming", { providerID: active.stream.model.providerID, modelID: active.stream.model.id })
+            const stream = await LLM.stream(active.stream)
+            log.info("stream created", { providerID: active.stream.model.providerID })
 
             for await (const value of stream.fullStream) {
               input.abort.throwIfAborted()
@@ -239,9 +243,9 @@ export namespace SessionProcessor {
                     usage: value.usage,
                     metadata: value.providerMetadata,
                   })
-                  const reason = typeof value.finishReason === "string"
-                    ? value.finishReason
-                    : (value.finishReason as any)?.unified ?? "unknown"
+                  const reason = typeof value.finishReason === "object" && value.finishReason !== null
+                    ? (value.finishReason as any).unified ?? "unknown"
+                    : value.finishReason
                   input.assistantMessage.finish = reason
                   input.assistantMessage.cost += usage.cost
                   input.assistantMessage.tokens = usage.tokens
@@ -340,13 +344,17 @@ export namespace SessionProcessor {
               if (needsCompaction) break
             }
           } catch (e: any) {
+            if (input.abort.aborted) break
+
             log.error("process", {
               error: e,
               stack: JSON.stringify(e.stack),
             })
-            const error = MessageV2.fromError(e, { providerID: input.model.providerID })
+            const current = active.stream.model
+            const error = MessageV2.fromError(e, { providerID: current.providerID })
             const retry = SessionRetry.retryable(error)
-            if (retry !== undefined) {
+
+            if (retry !== undefined && attempt === 0) {
               attempt++
               const delay = SessionRetry.delay(attempt, error.name === "APIError" ? error : undefined)
               SessionStatus.set(input.sessionID, {
@@ -358,6 +366,32 @@ export namespace SessionProcessor {
               await SessionRetry.sleep(delay, input.abort).catch(() => {})
               continue
             }
+
+            if (!failedOver) {
+              const alt = await Provider.failover({
+                providerID: current.providerID,
+                modelID: current.id,
+              })
+              if (alt) {
+                const target = await Provider.getModel(alt.providerID, alt.modelID).catch(() => undefined)
+                if (target) {
+                  log.info("failover", {
+                    from: current.providerID,
+                    to: alt.providerID,
+                    model: alt.modelID,
+                  })
+                  SessionStatus.set(input.sessionID, {
+                    type: "info",
+                    message: `Failing over to ${alt.providerID}`,
+                  })
+                  active.stream = { ...active.stream, model: target }
+                  attempt = 0
+                  failedOver = true
+                  continue
+                }
+              }
+            }
+
             input.assistantMessage.error = error
             Bus.publish(Session.Event.Error, {
               sessionID: input.assistantMessage.sessionID,
@@ -402,6 +436,7 @@ export namespace SessionProcessor {
           if (input.assistantMessage.error) return "stop"
           return "continue"
         }
+        return "stop"
       },
     }
     return result
