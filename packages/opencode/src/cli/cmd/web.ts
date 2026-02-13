@@ -5,6 +5,9 @@ import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { Flag } from "../../flag/flag"
 import open from "open"
 import { networkInterfaces } from "os"
+import { Instance } from "../../project/instance"
+import { InstanceBootstrap } from "../../project/bootstrap"
+import { Provider } from "../../provider/provider"
 
 function getNetworkIPs() {
   const nets = networkInterfaces()
@@ -38,6 +41,15 @@ export const WebCommand = cmd({
     }
     const opts = await resolveNetworkOptions(args)
     const server = Server.listen(opts)
+
+    Instance.provide({
+      directory: process.cwd(),
+      init: InstanceBootstrap,
+      fn: async () => {
+        await Provider.list()
+      },
+    })
+
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()

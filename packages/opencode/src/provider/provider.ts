@@ -940,7 +940,7 @@ export namespace Provider {
       options: {},
       headers: {},
       family: partial.family ?? "",
-      release_date: partial.release_date ?? new Date().toISOString().split("T")[0],
+      release_date: partial.release_date ?? "",
       variants: {},
     }
   }
