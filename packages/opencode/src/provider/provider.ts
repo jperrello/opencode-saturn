@@ -567,7 +567,10 @@ export namespace Provider {
         const models: Record<string, Model> = {}
 
         for (const modelId of service.models) {
-          models[modelId] = fromDynamicModel(id, modelId, { name: modelId }, "ai-sdk-provider-saturn")
+          models[modelId] = fromDynamicModel(id, modelId, {
+            name: modelId,
+            capabilities: { toolcall: true } as Model["capabilities"],
+          }, "ai-sdk-provider-saturn")
         }
 
         const endpoint = getEffectiveEndpoint(service)
